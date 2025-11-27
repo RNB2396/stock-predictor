@@ -39,7 +39,6 @@ async function runPrediction() {
 }
 
 function renderPayload(payload) {
-  // Metrics
   const met = payload.metrics || {};
   const lines = [
     `Ticker: ${payload.ticker || ""}`,
@@ -51,21 +50,22 @@ function renderPayload(payload) {
   ];
   metricsPre.textContent = lines.join("\n");
 
-  // Raw payload JSON
   payloadPre.textContent = JSON.stringify(payload, null, 2);
 
-  // Chart
   const hist = payload.history || [];
   const preds = payload.predictions_next5 || payload.predictions || [];
-  renderCandles(hist, preds);
+  const signals = payload.signals || [];
+  renderCandles(hist, preds, signals);
 }
 
-function renderCandles(history, preds) {
+function renderCandles(history, preds, signals) {
   const histArr = Array.isArray(history) ? history : [];
   const predArr = Array.isArray(preds) ? preds : [];
+  const sigArr = Array.isArray(signals) ? signals : [];
 
   console.log("history len:", histArr.length);
   console.log("predictions_next5 len:", predArr.length);
+  console.log("signals len:", sigArr.length);
   console.log("pred samples:", predArr.slice(0, 5));
 
   if (!histArr.length && !predArr.length) {
@@ -73,14 +73,14 @@ function renderCandles(history, preds) {
     return;
   }
 
-  // History arrays
+  // History candlesticks
   const histDates = histArr.map((c) => c.date || c.datetime || c.time);
   const histOpen = histArr.map((c) => c.open);
   const histHigh = histArr.map((c) => c.high);
   const histLow = histArr.map((c) => c.low);
   const histClose = histArr.map((c) => c.close);
 
-  // Prediction arrays
+  // Prediction candlesticks
   const predDates = predArr.map((c) => c.date || c.datetime || c.time);
   const predOpen = predArr.map((c) => c.open);
   const predHigh = predArr.map((c) => c.high);
@@ -113,6 +113,42 @@ function renderCandles(history, preds) {
       increasing: { line: { width: 1.5 } },
       decreasing: { line: { width: 1.5 } },
     });
+  }
+
+  // Buy/sell arrows from classifier backtest (test set only)
+  if (sigArr.length) {
+    const buys = sigArr.filter((s) => s.side === "buy");
+    const sells = sigArr.filter((s) => s.side === "sell");
+
+    if (buys.length) {
+      traces.push({
+        x: buys.map((s) => s.date),
+        y: buys.map((s) => s.price * 0.995), // slightly below bar
+        mode: "markers",
+        name: "Buy",
+        marker: {
+          symbol: "triangle-up",
+          size: 10,
+          color: "green",
+        },
+        hovertemplate: "Buy<br>%{x}<br>%{y}<extra></extra>",
+      });
+    }
+
+    if (sells.length) {
+      traces.push({
+        x: sells.map((s) => s.date),
+        y: sells.map((s) => s.price * 1.005), // slightly above bar
+        mode: "markers",
+        name: "Sell",
+        marker: {
+          symbol: "triangle-down",
+          size: 10,
+          color: "red",
+        },
+        hovertemplate: "Sell<br>%{x}<br>%{y}<extra></extra>",
+      });
+    }
   }
 
   const layout = {
