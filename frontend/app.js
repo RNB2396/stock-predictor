@@ -1,4 +1,4 @@
-// Set this to your deployed backend URL later
+// Backend base URL
 const API_BASE = "http://localhost:8000"; // dev
 
 const tickerInput = document.getElementById("ticker");
@@ -17,6 +17,7 @@ async function runPrediction() {
 
   metricsPre.textContent = "Loading...";
   payloadPre.textContent = "";
+  Plotly.purge("chart");
 
   try {
     const url = `${API_BASE}/api/predict?ticker=${encodeURIComponent(
@@ -55,40 +56,72 @@ function renderPayload(payload) {
 
   // Chart
   const hist = payload.history || [];
-  const preds = payload.predictions_next5 || [];
+  const preds = payload.predictions_next5 || payload.predictions || [];
   renderCandles(hist, preds);
 }
 
 function renderCandles(history, preds) {
-  if (!history.length && !preds.length) {
+  const histArr = Array.isArray(history) ? history : [];
+  const predArr = Array.isArray(preds) ? preds : [];
+
+  console.log("history len:", histArr.length);
+  console.log("predictions_next5 len:", predArr.length);
+  console.log("pred samples:", predArr.slice(0, 5));
+
+  if (!histArr.length && !predArr.length) {
     Plotly.newPlot("chart", [], { title: "No data" });
     return;
   }
 
-  const all = history.concat(preds);
+  // History arrays
+  const histDates = histArr.map((c) => c.date || c.datetime || c.time);
+  const histOpen = histArr.map((c) => c.open);
+  const histHigh = histArr.map((c) => c.high);
+  const histLow = histArr.map((c) => c.low);
+  const histClose = histArr.map((c) => c.close);
 
-  const dates = all.map((c) => c.date);
-  const open = all.map((c) => c.open);
-  const high = all.map((c) => c.high);
-  const low = all.map((c) => c.low);
-  const close = all.map((c) => c.close);
+  // Prediction arrays
+  const predDates = predArr.map((c) => c.date || c.datetime || c.time);
+  const predOpen = predArr.map((c) => c.open);
+  const predHigh = predArr.map((c) => c.high);
+  const predLow = predArr.map((c) => c.low);
+  const predClose = predArr.map((c) => c.close);
 
-  const trace = {
-    x: dates,
-    open,
-    high,
-    low,
-    close,
-    type: "candlestick",
-    name: "Price",
-  };
+  const traces = [];
+
+  if (histDates.length) {
+    traces.push({
+      x: histDates,
+      open: histOpen,
+      high: histHigh,
+      low: histLow,
+      close: histClose,
+      type: "candlestick",
+      name: "History",
+    });
+  }
+
+  if (predDates.length) {
+    traces.push({
+      x: predDates,
+      open: predOpen,
+      high: predHigh,
+      low: predLow,
+      close: predClose,
+      type: "candlestick",
+      name: "Predicted (next 5)",
+      increasing: { line: { width: 1.5 } },
+      decreasing: { line: { width: 1.5 } },
+    });
+  }
 
   const layout = {
     dragmode: "zoom",
-    showlegend: false,
-    margin: { t: 30, r: 10, b: 40, l: 50 },
+    showlegend: true,
+    legend: { x: 0, y: 1.1, orientation: "h" },
+    margin: { t: 40, r: 10, b: 40, l: 50 },
     xaxis: { rangeslider: { visible: false } },
   };
 
-  Plotly.newPlot("chart", [trace], layout);
+  Plotly.newPlot("chart", traces, layout, { responsive: true });
 }
