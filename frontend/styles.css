@@ -1,0 +1,99 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  height: 100vh;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.top-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid #ddd;
+  background: #f9fafb;
+}
+
+#ticker {
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  border: 1px solid #bbb;
+  width: 100px;
+}
+
+button {
+  padding: 0.35rem 0.75rem;
+  border-radius: 4px;
+  border: none;
+  background: #2563eb;
+  color: #fff;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #1d4ed8;
+}
+
+.model-group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.main {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  grid-template-rows: 1fr;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  height: calc(100% - 52px);
+}
+
+.chart-section {
+  min-width: 0;
+  min-height: 0;
+}
+
+#chart {
+  width: 100%;
+  height: 100%;
+}
+
+.panels {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.panel {
+  flex: 1;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 0.5rem;
+  background: #ffffff;
+  overflow: auto;
+}
+
+.panel h2 {
+  margin: 0 0 0.5rem 0;
+  font-size: 0.95rem;
+}
+
+pre {
+  margin: 0;
+  font-family: "JetBrains Mono", "Consolas", monospace;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
