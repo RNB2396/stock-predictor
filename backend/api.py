@@ -18,7 +18,6 @@ origins = [
 
 app.add_middleware(
     CORSMiddleware,
-    # In dev, this is fine; for production prefer the explicit `origins` list above.
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
@@ -46,7 +45,6 @@ def predict(
             model=model,
         )
 
-        # Optionally mirror desktop behavior and write JSON to disk
         out_path = Path(DEFAULT_MODELS_DIR) / f"ui_payload_{ticker}.json"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -54,10 +52,8 @@ def predict(
         return payload
 
     except SystemExit as e:
-        # Expected "user-level" errors (e.g., not enough data)
         raise HTTPException(status_code=400, detail=str(e))
 
     except Exception as e:
-        # Log full traceback to server logs for debugging
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))

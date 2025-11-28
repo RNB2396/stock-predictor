@@ -1,5 +1,4 @@
-// Backend base URL
-const API_BASE = "http://localhost:8000"; // dev
+const API_BASE = "http://localhost:8000"; 
 
 const tickerInput = document.getElementById("ticker");
 const runBtn = document.getElementById("run-btn");
@@ -73,14 +72,12 @@ function renderCandles(history, preds, signals) {
     return;
   }
 
-  // History candlesticks
   const histDates = histArr.map((c) => c.date || c.datetime || c.time);
   const histOpen = histArr.map((c) => c.open);
   const histHigh = histArr.map((c) => c.high);
   const histLow = histArr.map((c) => c.low);
   const histClose = histArr.map((c) => c.close);
 
-  // Prediction candlesticks
   const predDates = predArr.map((c) => c.date || c.datetime || c.time);
   const predOpen = predArr.map((c) => c.open);
   const predHigh = predArr.map((c) => c.high);
@@ -115,7 +112,6 @@ function renderCandles(history, preds, signals) {
     });
   }
 
-  // Buy/sell arrows from classifier backtest (test set only)
   if (sigArr.length) {
     const buys = sigArr.filter((s) => s.side === "buy");
     const sells = sigArr.filter((s) => s.side === "sell");
@@ -123,7 +119,7 @@ function renderCandles(history, preds, signals) {
     if (buys.length) {
       traces.push({
         x: buys.map((s) => s.date),
-        y: buys.map((s) => s.price * 0.995), // slightly below bar
+        y: buys.map((s) => s.price * 0.995), 
         mode: "markers",
         name: "Buy",
         marker: {
@@ -138,7 +134,7 @@ function renderCandles(history, preds, signals) {
     if (sells.length) {
       traces.push({
         x: sells.map((s) => s.date),
-        y: sells.map((s) => s.price * 1.005), // slightly above bar
+        y: sells.map((s) => s.price * 1.005), 
         mode: "markers",
         name: "Sell",
         marker: {

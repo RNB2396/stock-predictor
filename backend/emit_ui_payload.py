@@ -27,11 +27,41 @@ import warnings
 # ============================================================
 
 TRAIN_YEARS = 7
-WINDOW = 30  # lookback window for sequence features
+WINDOW = 30  #lookback window
 
-# ============================================================
+#Move Filtering
+CLS_RET_THRESHOLD = 0.30
+
+# Confidence threshold
+CLS_CONFIDENCE_BAND = 0.05
+
+# Base training
+BASE_UNIVERSE_TICKERS: List[str] = [
+    # Large-cap tech / growth
+    "AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "GOOG", "TSLA", "AMD", "AVGO",
+    "ADBE", "CRM", "INTC", "CSCO", "ORCL", "IBM", "NFLX", "SHOP", "PYPL",
+    # Financials
+    "JPM", "BAC", "WFC", "C", "GS", "MS", "BLK", "SCHW", "AXP", "USB",
+    # Energy
+    "XOM", "CVX", "SLB", "COP", "EOG", "PSX",
+    # Healthcare
+    "UNH", "JNJ", "PFE", "MRK", "ABBV", "LLY", "TMO", "ABT", "BMY",
+    # Consumer
+    "WMT", "COST", "PG", "KO", "PEP", "MCD", "HD", "LOW", "NKE", "SBUX",
+    # Industrials
+    "BA", "CAT", "GE", "HON", "LMT", "DE",
+    # Communications / media
+    "T", "VZ", "DIS", "CMCSA", "TMUS",
+    # Materials / utilities / REITs
+    "LIN", "NEM", "FCX", "NEE", "DUK", "SO", "PLD", "O",
+    # Broad ETFs
+    "SPY", "QQQ", "IWM", "DIA", "XLK", "XLF", "XLE", "XLV", "XLY", "XLP",
+    "XLI", "XLU", "XLB", "XLC", "XLRE",
+]
+
+GLOBAL_CLS_VERSION = "v2"
+
 # Timezone helpers (America/New_York)
-# ============================================================
 
 try:
     from zoneinfo import ZoneInfo
@@ -44,10 +74,7 @@ except Exception:
 def now_ny() -> datetime:
     return datetime.now(TZ_NY) if TZ_NY else datetime.now()
 
-
-# ============================================================
 # Small helpers
-# ============================================================
 
 def _as_float(x) -> float:
     """Coerce scalar/array/Series to float (last element), NaN on failure."""
@@ -75,24 +102,31 @@ def _as_int(x) -> int:
         except Exception:
             return 0
 
+# Sector ETF mapping
 
-# Simple sector ETF mapping for some common tickers
 SECTOR_ETF_MAP: Dict[str, str] = {
     "AAPL": "XLK",
     "MSFT": "XLK",
     "NVDA": "XLK",
+    "AMD": "XLK",
+    "AVGO": "XLK",
     "AMZN": "XLY",
+    "TSLA": "XLY",
     "META": "XLC",
     "GOOGL": "XLC",
+    "GOOG": "XLC",
     "JPM": "XLF",
     "BAC": "XLF",
+    "WFC": "XLF",
     "XOM": "XLE",
     "CVX": "XLE",
+    "UNH": "XLV",
+    "JNJ": "XLV",
+    "WMT": "XLP",
+    "COST": "XLP",
 }
 
-# ============================================================
 # Feature engineering
-# ============================================================
 
 def _ema(series: pd.Series, span: int) -> pd.Series:
     return series.ewm(span=span, adjust=False).mean()
@@ -100,7 +134,7 @@ def _ema(series: pd.Series, span: int) -> pd.Series:
 
 def make_features(df: pd.DataFrame, ctx: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """
-    Technical features for the target ticker + optional market context.
+    Rich technical + context features. ctx columns are optional.
     """
     open_ = df["Open"].astype(float)
     high = df["High"].astype(float)
@@ -110,7 +144,7 @@ def make_features(df: pd.DataFrame, ctx: Optional[pd.DataFrame] = None) -> pd.Da
 
     feats = pd.DataFrame(index=df.index)
 
-    # Price-based features
+    # Price and returns
     feats["ret1"] = close.pct_change()
     feats["ret5"] = close.pct_change(5)
 
@@ -152,7 +186,7 @@ def make_features(df: pd.DataFrame, ctx: Optional[pd.DataFrame] = None) -> pd.Da
     feats["high_close_spread"] = (high - close) / (close + 1e-9)
     feats["low_close_spread"] = (low - close) / (close + 1e-9)
 
-    # Market context features if provided and present
+    # Context, when available
     if ctx is not None and not ctx.empty:
         if "SPY_Close" in ctx.columns:
             spy = ctx["SPY_Close"].astype(float)
@@ -175,11 +209,30 @@ def make_features(df: pd.DataFrame, ctx: Optional[pd.DataFrame] = None) -> pd.Da
             feats["sector_ret1"] = sec.pct_change()
             feats["sector_ret5"] = sec.pct_change(5)
 
+        if "UUP_Close" in ctx.columns:
+            uup = ctx["UUP_Close"].astype(float)
+            feats["uup_ret1"] = uup.pct_change()
+            feats["uup_ret5"] = uup.pct_change(5)
+
+        if "GLD_Close" in ctx.columns:
+            gld = ctx["GLD_Close"].astype(float)
+            feats["gld_ret1"] = gld.pct_change()
+            feats["gld_ret5"] = gld.pct_change(5)
+
+        if "TLT_Close" in ctx.columns:
+            tlt = ctx["TLT_Close"].astype(float)
+            feats["tlt_ret1"] = tlt.pct_change()
+            feats["tlt_ret5"] = tlt.pct_change(5)
+
+        if "HYG_Close" in ctx.columns:
+            hyg = ctx["HYG_Close"].astype(float)
+            feats["hyg_ret1"] = hyg.pct_change()
+            feats["hyg_ret5"] = hyg.pct_change(5)
+
     feats = feats.ffill().bfill().fillna(0.0)
     return feats
 
 
-# Base feature list; some may be absent if context could not be loaded for a ticker
 FEATURE_COLS: List[str] = [
     "ret1",
     "ret5",
@@ -208,6 +261,14 @@ FEATURE_COLS: List[str] = [
     "vix_level",
     "sector_ret1",
     "sector_ret5",
+    "uup_ret1",
+    "uup_ret5",
+    "gld_ret1",
+    "gld_ret5",
+    "tlt_ret1",
+    "tlt_ret5",
+    "hyg_ret1",
+    "hyg_ret5",
 ]
 
 
@@ -218,10 +279,8 @@ def build_supervised_sequences(
     feature_cols: Optional[List[str]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, List[pd.Timestamp]]:
     """
-    Build sequence dataset.
-
     X_seq: [n_samples, window, n_features]
-    y:     [n_samples, 4] = volatility-scaled log-returns for [Open, High, Low, Close].
+    y:     [n_samples, 4] = scaled log-returns for [Open, High, Low, Close].
     """
     if feature_cols is None:
         feature_cols = FEATURE_COLS
@@ -244,13 +303,18 @@ def build_supervised_sequences(
     nxt_low = low.shift(-1)
     nxt_close = close.shift(-1)
 
-    # Log returns
+    #Log returns
     ret_open = np.log(nxt_open / open_.replace(0, np.nan))
     ret_high = np.log(nxt_high / high.replace(0, np.nan))
     ret_low = np.log(nxt_low / low.replace(0, np.nan))
     ret_close = np.log(nxt_close / close.replace(0, np.nan))
 
-    # Volatility for scaling: std of close pct-change
+    ret_open = pd.Series(np.asarray(ret_open).ravel(), index=df.index)
+    ret_high = pd.Series(np.asarray(ret_high).ravel(), index=df.index)
+    ret_low = pd.Series(np.asarray(ret_low).ravel(), index=df.index)
+    ret_close = pd.Series(np.asarray(ret_close).ravel(), index=df.index)
+
+    # Volatility scale
     close_ret = close.pct_change()
     vol20 = close_ret.rolling(window=20, min_periods=20).std()
     scale = vol20.replace(0, np.nan)
@@ -267,9 +331,11 @@ def build_supervised_sequences(
 
     feats = make_features(df, ctx)
 
-    # Keep only feature columns that actually exist
-    available_cols = [c for c in feature_cols if c in feats.columns]
-    feats = feats[available_cols]
+    # Ensure all feature_cols exist 
+    for col in feature_cols:
+        if col not in feats.columns:
+            feats[col] = 0.0
+    feats = feats[feature_cols]
 
     data = pd.concat([feats, targets_df], axis=1)
     data = data.replace([np.inf, -np.inf], np.nan).dropna()
@@ -279,7 +345,7 @@ def build_supervised_sequences(
             f"Not enough usable samples after feature engineering ({len(data)})"
         )
 
-    X_all = data[available_cols].values
+    X_all = data[feature_cols].values
     y_all = data[
         ["ret_open_scaled", "ret_high_scaled", "ret_low_scaled", "ret_close_scaled"]
     ].values
@@ -298,19 +364,13 @@ def build_supervised_sequences(
     y_seq = np.asarray(y_seq_list, dtype=np.float32)
     return X_seq, y_seq, ts_seq
 
-
-# ============================================================
-# Regression metrics (focus on scaled Close)
-# ============================================================
+# Regression metrics
 
 def regression_metrics(
     y_true: np.ndarray,
     y_pred: np.ndarray,
     close_index: int = 3,
 ) -> Dict[str, float]:
-    """
-    Metrics on scaled Close (target index 3).
-    """
     if y_true.size == 0 or y_pred.size == 0:
         return {
             "rmse_close": float("nan"),
@@ -337,22 +397,15 @@ def regression_metrics(
         "r2_close": float(r2),
     }
 
-
-# ============================================================
-# Regressors (XGB / RF)
-# ============================================================
+# Regressors (per ticker)
 
 def train_xgb_regressor(
     X_seq: np.ndarray,
     y: np.ndarray,
     split: int,
 ) -> Tuple[List[XGBRegressor], Dict[str, float]]:
-    """
-    Train one XGBRegressor per scaled target dimension (4 dims).
-    """
     n_samples, window, n_feats = X_seq.shape
     X_flat = X_seq.reshape(n_samples, window * n_feats)
-
     X_train, X_test = X_flat[:split], X_flat[split:]
     y_train, y_test = y[:split], y[split:]
 
@@ -367,8 +420,8 @@ def train_xgb_regressor(
             n_estimators=400,
             max_depth=3,
             learning_rate=0.05,
-            subsample=0.8,
-            colsample_bytree=0.8,
+            subsample=0.9,
+            colsample_bytree=0.9,
             reg_lambda=2.0,
             reg_alpha=1.0,
             objective="reg:squarederror",
@@ -390,12 +443,8 @@ def train_rf_regressor(
     y: np.ndarray,
     split: int,
 ) -> Tuple[MultiOutputRegressor, Dict[str, float]]:
-    """
-    RandomForest multi-output regressor over flattened windows.
-    """
     n_samples, window, n_feats = X_seq.shape
     X_flat = X_seq.reshape(n_samples, window * n_feats)
-
     X_train, X_test = X_flat[:split], X_flat[split:]
     y_train, y_test = y[:split], y[split:]
 
@@ -407,17 +456,12 @@ def train_rf_regressor(
     )
     model = MultiOutputRegressor(base)
     model.fit(X_train, y_train)
-
     y_pred = model.predict(X_test)
     metrics = regression_metrics(y_test, y_pred, close_index=3)
     metrics["n_train"] = int(len(X_train))
     metrics["n_test"] = int(len(X_test))
     return model, metrics
 
-
-# ============================================================
-# Serialization helpers
-# ============================================================
 
 def to_rows(df: pd.DataFrame) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
@@ -444,15 +488,9 @@ def next_weekdays(start_dt: pd.Timestamp, n: int = 5) -> List[pd.Timestamp]:
         d += timedelta(days=1)
     return out
 
-
-# ============================================================
-# Context data (SPY, QQQ, VIX, sector ETF)
-# ============================================================
+# Context data
 
 def _build_context(df_index: pd.Index, ticker: str, start: str, end: str) -> pd.DataFrame:
-    """
-    Download SPY, QQQ, VIX, and a sector ETF (if mapped) and align to df_index.
-    """
     ctx = pd.DataFrame(index=df_index)
 
     def add_ctx(symbol: str, col_prefix: str, auto_adjust: bool = True):
@@ -475,18 +513,17 @@ def _build_context(df_index: pd.Index, ticker: str, start: str, end: str) -> pd.
     if sector_symbol:
         add_ctx(sector_symbol, "SECTOR", auto_adjust=True)
 
+    add_ctx("UUP", "UUP", auto_adjust=True)
+    add_ctx("GLD", "GLD", auto_adjust=True)
+    add_ctx("TLT", "TLT", auto_adjust=True)
+    add_ctx("HYG", "HYG", auto_adjust=True)
+
     return ctx
 
-
-# ============================================================
-# Model paths (regressors) – versioned to avoid old-cache shape mismatch
-# ============================================================
+# Regressor model paths
 
 def _model_paths_reg(models_dir: Path, ticker: str, model_kind: str) -> Tuple[Path, Path]:
-    """
-    Versioned model filenames so that changes in feature set don't re-use old models.
-    """
-    version = "v2"  # bump this whenever feature layout changes
+    version = "v3"
     if model_kind == "xgb":
         model_path = models_dir / f"{ticker}_{model_kind}_{version}_models.joblib"
     elif model_kind == "rf":
@@ -506,13 +543,9 @@ def get_or_train_regressor(
     feature_cols: List[str],
     window: int,
 ) -> Tuple[Any, Dict[str, float]]:
-    """
-    Load or train the regression model (XGB/RF) and metrics (single 80/20 split).
-    """
     model_kind = model_kind.lower()
     model_path, metrics_path = _model_paths_reg(models_dir, ticker, model_kind)
 
-    # Load cached
     if model_path.exists() and metrics_path.exists():
         try:
             model = joblib.load(model_path)
@@ -521,14 +554,13 @@ def get_or_train_regressor(
         except Exception:
             pass
 
-    # Train from scratch
     X_seq, y_seq, _ = build_supervised_sequences(
         df, ctx, window=window, feature_cols=feature_cols
     )
     n_samples = len(X_seq)
     split = int(n_samples * 0.8)
     if split <= 0 or split >= n_samples:
-        raise SystemExit("Not enough rows to split train/test in sequence dataset.")
+        raise SystemExit("Not enough rows to split train/test for regressor.")
 
     if model_kind == "xgb":
         model, metrics = train_xgb_regressor(X_seq, y_seq, split)
@@ -546,34 +578,27 @@ def get_or_train_regressor(
 
     return model, metrics
 
-
-# ============================================================
 # Decode scaled returns to OHLC
-# ============================================================
 
 def _decode_scaled_returns_to_ohlc(
     last_row: pd.Series,
     y_hat_scaled: np.ndarray,
     seed: pd.DataFrame,
 ) -> Tuple[float, float, float, float]:
-    """
-    Convert scaled returns back to OHLC prices using current volatility.
-    """
-    last_open = float(last_row["Open"])
-    last_high = float(last_row["High"])
-    last_low = float(last_row["Low"])
-    last_close = float(last_row["Close"])
+    last_open = _as_float(last_row["Open"])
+    last_high = _as_float(last_row["High"])
+    last_low = _as_float(last_row["Low"])
+    last_close = _as_float(last_row["Close"])
 
     close_series = seed["Close"].astype(float)
     close_ret = close_series.pct_change()
     vol20 = close_ret.rolling(window=20, min_periods=5).std()
 
-    # Robust, explicit handling of volatility:
     vol_valid = vol20.dropna()
     if len(vol_valid) > 0:
-        vol_last = float(vol_valid.iloc[-1])
+        vol_last = _as_float(vol_valid.iloc[-1])
         if not np.isfinite(vol_last) or vol_last <= 1e-6:
-            vol_last = float(vol_valid.tail(60).mean())
+            vol_last = _as_float(vol_valid.tail(60).mean())
     else:
         vol_last = 0.02
 
@@ -602,10 +627,6 @@ def _decode_scaled_returns_to_ohlc(
     return float(o), float(h), float(l), float(c)
 
 
-# ============================================================
-# Next-5-day prediction using regression model
-# ============================================================
-
 def predict_next5_ohlc(
     df: pd.DataFrame,
     ctx: pd.DataFrame,
@@ -614,9 +635,6 @@ def predict_next5_ohlc(
     model_kind: str,
     model_obj: Any,
 ) -> List[Dict[str, Any]]:
-    """
-    Predict next 5 trading days using regression model on scaled returns.
-    """
     seed = df.copy()
     ctx_seed = ctx.copy()
     last_ts = seed.index[-1]
@@ -626,8 +644,10 @@ def predict_next5_ohlc(
 
     for d in future_days:
         feats = make_features(seed, ctx_seed)
-        available_cols = [c for c in feature_cols if c in feats.columns]
-        feats = feats[available_cols]
+        for col in feature_cols:
+            if col not in feats.columns:
+                feats[col] = 0.0
+        feats = feats[feature_cols]
 
         if len(feats) < window:
             needed = window - len(feats)
@@ -639,20 +659,20 @@ def predict_next5_ohlc(
 
         if model_kind == "xgb":
             X_flat = window_slice.reshape(1, -1)
-            models: List[XGBRegressor] = model_obj  # type: ignore
+            models: List[XGBRegressor] = model_obj 
             y_hat_cols = [m.predict(X_flat)[0] for m in models]
             y_hat_scaled = np.array(y_hat_cols, dtype=float)
         elif model_kind == "rf":
             X_flat = window_slice.reshape(1, -1)
             y_hat_scaled = np.asarray(
                 model_obj.predict(X_flat)[0], dtype=float
-            )  # type: ignore
+            ) 
         else:
             raise SystemExit(f"Unsupported model kind for prediction: {model_kind}")
 
         last_row = seed.iloc[-1]
         o, h, l, c = _decode_scaled_returns_to_ohlc(last_row, y_hat_scaled, seed)
-        v = float(last_row["Volume"])
+        v = _as_float(last_row["Volume"])
 
         preds.append(
             dict(
@@ -679,40 +699,202 @@ def predict_next5_ohlc(
 
     return preds
 
-
-# ============================================================
-# Rolling walk-forward classifier + signals
-# ============================================================
+# Global multi-ticker classifier
 
 def _fit_xgb_classifier(X_train: np.ndarray, y_train: np.ndarray) -> XGBClassifier:
+    pos = float((y_train == 1).sum())
+    neg = float((y_train == 0).sum())
+    if pos == 0 or neg == 0:
+        scale_pos_weight = 1.0
+    else:
+        scale_pos_weight = neg / pos
+
     clf = XGBClassifier(
-        n_estimators=300,
-        max_depth=3,
+        n_estimators=500,
+        max_depth=4,
         learning_rate=0.05,
-        subsample=0.8,
-        colsample_bytree=0.8,
+        subsample=0.9,
+        colsample_bytree=0.9,
         n_jobs=4,
         objective="binary:logistic",
         eval_metric="logloss",
+        scale_pos_weight=scale_pos_weight,
     )
     clf.fit(X_train, y_train)
     return clf
 
 
-def rolling_walkforward_classifier_signals(
+def _best_threshold(probs: np.ndarray, y_true: np.ndarray) -> float:
+    if probs.size == 0:
+        return 0.5
+    thresholds = np.linspace(0.3, 0.7, 41)
+    best_thr = 0.5
+    best_acc = 0.0
+    for thr in thresholds:
+        pred = (probs >= thr).astype(int)
+        acc = accuracy_score(y_true, pred)
+        if acc > best_acc:
+            best_acc = acc
+            best_thr = thr
+    return float(best_thr)
+
+
+def _global_cls_paths(models_dir: Path) -> Tuple[Path, Path]:
+    model_path = models_dir / f"global_cls_{GLOBAL_CLS_VERSION}.joblib"
+    meta_path = models_dir / f"global_cls_{GLOBAL_CLS_VERSION}_meta.json"
+    return model_path, meta_path
+
+
+def _build_cls_dataset_for_ticker(
+    ticker: str,
+    start: str,
+    end: str,
+    feature_cols: List[str],
+    window: int,
+) -> Tuple[np.ndarray, np.ndarray, List[pd.Timestamp]]:
+    """
+    Build classifier dataset for one ticker. Returns (X_flat, y_labels, ts).
+    On download or feature failure, returns empty arrays.
+    """
+    try:
+        df = yf.download(
+            ticker,
+            start=start,
+            end=end,
+            auto_adjust=True,
+            progress=False,
+        )
+    except Exception:
+        return np.empty((0, window * len(feature_cols))), np.empty((0,)), []
+
+    if df.empty or len(df) < 260:
+        return np.empty((0, window * len(feature_cols))), np.empty((0,)), []
+
+    df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+    ctx = _build_context(df.index, ticker, start, end)
+
+    X_seq, y_seq, ts_seq = build_supervised_sequences(
+        df, ctx, window=window, feature_cols=feature_cols
+    )
+    if X_seq.size == 0:
+        return np.empty((0, window * len(feature_cols))), np.empty((0,)), []
+
+    scaled_close_ret = y_seq[:, 3]
+    mask = np.abs(scaled_close_ret) > CLS_RET_THRESHOLD
+    if not mask.any():
+        return np.empty((0, window * len(feature_cols))), np.empty((0,)), []
+
+    X_seq_f = X_seq[mask]
+    y_f = (scaled_close_ret[mask] > 0.0).astype(int)
+    ts_f = [ts for ts, m in zip(ts_seq, mask) if m]
+
+    n_samples, win, n_feats = X_seq_f.shape
+    X_flat = X_seq_f.reshape(n_samples, win * n_feats)
+    return X_flat, y_f, ts_f
+
+
+def _train_global_classifier(
+    models_dir: Path,
+    universe: List[str],
+    start: str,
+    end: str,
+    feature_cols: List[str],
+    window: int,
+) -> Tuple[XGBClassifier, Dict[str, Any]]:
+    """
+    Train multi-ticker classifier on (strong-move) days across a universe.
+    """
+    all_X: List[np.ndarray] = []
+    all_y: List[np.ndarray] = []
+
+    uniq_universe = sorted(set(universe))
+
+    for t in uniq_universe:
+        X_flat, y_labels, _ = _build_cls_dataset_for_ticker(
+            t, start=start, end=end, feature_cols=feature_cols, window=window
+        )
+        if X_flat.size == 0:
+            continue
+        all_X.append(X_flat)
+        all_y.append(y_labels)
+
+    if not all_X:
+        raise SystemExit("Global classifier: no training data assembled.")
+
+    X_all = np.vstack(all_X)
+    y_all = np.concatenate(all_y)
+
+    clf = _fit_xgb_classifier(X_all, y_all)
+
+    meta = {
+        "universe": uniq_universe,
+        "start": start,
+        "end": end,
+        "n_samples": int(len(X_all)),
+        "feature_dim": int(X_all.shape[1]),
+    }
+
+    model_path, meta_path = _global_cls_paths(models_dir)
+    models_dir.mkdir(parents=True, exist_ok=True)
+    joblib.dump(clf, model_path)
+    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+    return clf, meta
+
+
+def ensure_global_classifier(
+    models_dir: Path,
+    base_universe: List[str],
+    extra_ticker: Optional[str],
+    start: str,
+    end: str,
+    feature_cols: List[str],
+    window: int,
+) -> Tuple[XGBClassifier, Dict[str, Any]]:
+    """
+    Ensure a global classifier exists that covers at least base_universe + extra_ticker.
+    Retrains if required.
+    """
+    model_path, meta_path = _global_cls_paths(models_dir)
+
+    desired_universe = list(sorted(set(base_universe + ([extra_ticker] if extra_ticker else []))))
+
+    if model_path.exists() and meta_path.exists():
+        try:
+            clf = joblib.load(model_path)
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            trained_universe = meta.get("universe", [])
+            if set(desired_universe).issubset(set(trained_universe)):
+                return clf, meta
+        except Exception:
+            pass
+
+    clf, meta = _train_global_classifier(
+        models_dir=models_dir,
+        universe=desired_universe,
+        start=start,
+        end=end,
+        feature_cols=feature_cols,
+        window=window,
+    )
+    return clf, meta
+
+
+def evaluate_classifier_for_ticker(
+    ticker: str,
     df: pd.DataFrame,
     ctx: pd.DataFrame,
+    clf: XGBClassifier,
     feature_cols: List[str],
     window: int,
 ) -> Tuple[Dict[str, float], List[Dict[str, Any]]]:
     """
-    Rolling walk-forward evaluation for next-day up/down classifier.
+    Evaluate global classifier on one ticker using strong-move days + confidence filter.
     """
     X_seq, y_seq, ts_seq = build_supervised_sequences(
         df, ctx, window=window, feature_cols=feature_cols
     )
-    n_samples, win, n_feats = X_seq.shape
-    if n_samples < 200:
+    if X_seq.size == 0:
         return {
             "cls_accuracy": float("nan"),
             "cls_precision": float("nan"),
@@ -721,91 +903,91 @@ def rolling_walkforward_classifier_signals(
             "cls_n_test": 0,
         }, []
 
-    X_flat = X_seq.reshape(n_samples, win * n_feats)
-    labels = (y_seq[:, 3] > 0).astype(int)  # up/down based on scaled close
-
-    # Rolling setup: first 50% as initial train, remaining as test blocks
-    initial_train = max(int(n_samples * 0.5), window * 2)
-    if initial_train >= n_samples - 5:
-        initial_train = n_samples // 2
-
-    remaining = n_samples - initial_train
-    test_block = max(20, remaining // 4)  # ~4 blocks over remaining
-
-    all_true: List[int] = []
-    all_pred: List[int] = []
-    signals: List[Dict[str, Any]] = []
-    total_train = 0
-    total_test = 0
-
-    idx = initial_train
-    while idx < n_samples:
-        train_end = idx
-        test_start = idx
-        test_end = min(idx + test_block, n_samples)
-
-        if train_end <= window:
-            break
-
-        X_train = X_flat[:train_end]
-        y_train = labels[:train_end]
-        X_test = X_flat[test_start:test_end]
-        y_test = labels[test_start:test_end]
-
-        clf = _fit_xgb_classifier(X_train, y_train)
-        prob = clf.predict_proba(X_test)[:, 1]
-        pred = (prob >= 0.5).astype(int)
-
-        all_true.extend(y_test.tolist())
-        all_pred.extend(pred.tolist())
-
-        total_train += len(X_train)
-        total_test += len(X_test)
-
-        # signals for these test days
-        for i_local, i_global in enumerate(range(test_start, test_end)):
-            ts = ts_seq[i_global]
-            if ts not in df.index:
-                continue
-            price = float(df.loc[ts, "Close"])
-            side = "buy" if pred[i_local] == 1 else "sell"
-            signals.append(
-                dict(
-                    date=ts.strftime("%Y-%m-%d"),
-                    side=side,
-                    price=price,
-                )
-            )
-
-        idx = test_end
-
-    if total_test == 0 or not all_true:
+    scaled_close_ret = y_seq[:, 3]
+    mask = np.abs(scaled_close_ret) > CLS_RET_THRESHOLD
+    if not mask.any():
         return {
             "cls_accuracy": float("nan"),
             "cls_precision": float("nan"),
             "cls_recall": float("nan"),
-            "cls_n_train": total_train,
-            "cls_n_test": total_test,
-        }, signals
+            "cls_n_train": 0,
+            "cls_n_test": 0,
+        }, []
 
-    y_true_arr = np.asarray(all_true)
-    y_pred_arr = np.asarray(all_pred)
+    X_seq_f = X_seq[mask]
+    y_f = (scaled_close_ret[mask] > 0.0).astype(int)
+    ts_f = [ts for ts, m in zip(ts_seq, mask) if m]
 
-    cls_metrics = {
-        "cls_accuracy": float(accuracy_score(y_true_arr, y_pred_arr)),
-        "cls_precision": float(
-            precision_score(y_true_arr, y_pred_arr, zero_division=0)
-        ),
-        "cls_recall": float(recall_score(y_true_arr, y_pred_arr, zero_division=0)),
-        "cls_n_train": int(total_train),
-        "cls_n_test": int(total_test),
+    n_samples, win, n_feats = X_seq_f.shape
+    X_flat = X_seq_f.reshape(n_samples, win * n_feats)
+
+    split = int(0.8 * n_samples)
+    if split <= 0 or split >= n_samples:
+        return {
+            "cls_accuracy": float("nan"),
+            "cls_precision": float("nan"),
+            "cls_recall": float("nan"),
+            "cls_n_train": 0,
+            "cls_n_test": 0,
+        }, []
+
+    X_train = X_flat[:split]
+    y_train = y_f[:split]
+    X_test = X_flat[split:]
+    y_test = y_f[split:]
+    ts_test = ts_f[split:]
+
+    prob_train = clf.predict_proba(X_train)[:, 1]
+    thr = _best_threshold(prob_train, y_train)
+
+    prob_test = clf.predict_proba(X_test)[:, 1]
+    pred_test_raw = (prob_test >= thr).astype(int)
+
+    band = CLS_CONFIDENCE_BAND
+    confident_mask = (prob_test >= thr + band) | (prob_test <= thr - band)
+    if not confident_mask.any():
+        return {
+            "cls_accuracy": float("nan"),
+            "cls_precision": float("nan"),
+            "cls_recall": float("nan"),
+            "cls_n_train": int(len(X_train)),
+            "cls_n_test": 0,
+        }, []
+
+    y_true_c = y_test[confident_mask]
+    y_pred_c = pred_test_raw[confident_mask]
+    ts_c = [ts for ts, m in zip(ts_test, confident_mask) if m]
+    prob_c = prob_test[confident_mask]
+
+    acc = accuracy_score(y_true_c, y_pred_c)
+    prec = precision_score(y_true_c, y_pred_c, zero_division=0)
+    rec = recall_score(y_true_c, y_pred_c, zero_division=0)
+
+    metrics = {
+        "cls_accuracy": float(acc),
+        "cls_precision": float(prec),
+        "cls_recall": float(rec),
+        "cls_n_train": int(len(X_train)),
+        "cls_n_test": int(len(y_true_c)),
     }
-    return cls_metrics, signals
 
+    signals: List[Dict[str, Any]] = []
+    for label, p, ts in zip(y_pred_c, prob_c, ts_c):
+        if ts not in df.index:
+            continue
+        price = _as_float(df.loc[ts, "Close"])
+        side = "buy" if label == 1 else "sell"
+        signals.append(
+            dict(
+                date=ts.strftime("%Y-%m-%d"),
+                side=side,
+                price=price,
+            )
+        )
 
-# ============================================================
-# Core payload builder
-# ============================================================
+    return metrics, signals
+
+# Payload builder
 
 def build_payload(
     ticker: str,
@@ -813,9 +995,6 @@ def build_payload(
     models_dir: str,
     model: str = "xgb",
 ) -> Dict[str, Any]:
-    """
-    Build UI payload for a given ticker and chosen model.
-    """
     ticker = ticker.upper()
     models_path = Path(models_dir)
     models_path.mkdir(parents=True, exist_ok=True)
@@ -848,7 +1027,6 @@ def build_payload(
     feature_cols = FEATURE_COLS
     window = WINDOW
 
-    # Regressor (cached)
     reg_model, reg_metrics = get_or_train_regressor(
         ticker=ticker,
         df=df,
@@ -859,10 +1037,21 @@ def build_payload(
         window=window,
     )
 
-    # Rolling walk-forward classifier + signals
-    cls_metrics, signals = rolling_walkforward_classifier_signals(
+    clf, cls_meta = ensure_global_classifier(
+        models_dir=models_path,
+        base_universe=BASE_UNIVERSE_TICKERS,
+        extra_ticker=ticker,
+        start=train_start_date,
+        end=yf_end,
+        feature_cols=feature_cols,
+        window=window,
+    )
+
+    cls_metrics, signals = evaluate_classifier_for_ticker(
+        ticker=ticker,
         df=df,
         ctx=ctx,
+        clf=clf,
         feature_cols=feature_cols,
         window=window,
     )
@@ -896,8 +1085,8 @@ def build_payload(
         predictions_next5=preds_next5,
         signals=signals,
         backtest={
-            "trades": 0,
-            "win_rate": 0.0,
+            "trades": int(cls_metrics.get("cls_n_test", 0)),
+            "win_rate": float(cls_metrics.get("cls_accuracy", float("nan"))),
             "avg_gain": 0.0,
             "avg_loss": 0.0,
             "sharpe": 0.0,
@@ -906,27 +1095,52 @@ def build_payload(
     )
     return payload
 
-
-# ============================================================
-# CLI wrapper
-# ============================================================
+# CLI
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build UI payload for a given ticker")
-    parser.add_argument("--ticker", required=True)
-    parser.add_argument("--start", required=True)
-    parser.add_argument("--end", required=False)
+    parser = argparse.ArgumentParser(description="Build UI payload or train global classifier")
+    parser.add_argument("--ticker", required=False)
+    parser.add_argument("--start", required=False, default=None)
+    parser.add_argument("--end", required=False, default=None)
     parser.add_argument("--models_dir", required=True)
     parser.add_argument(
         "--model",
         choices=["xgb", "rf"],
         default="xgb",
     )
+    parser.add_argument(
+        "--train_global_cls",
+        action="store_true",
+        help="Train the global multi-ticker classifier and exit.",
+    )
     args = parser.parse_args()
+
+    models_path = Path(args.models_dir)
+    yesterday = now_ny().date() - timedelta(days=1)
+    yf_end = (yesterday + timedelta(days=1)).strftime("%Y-%m-%d")
+    train_start_date = (yesterday - timedelta(days=365 * TRAIN_YEARS)).strftime(
+        "%Y-%m-%d"
+    )
+
+    if args.train_global_cls:
+        ensure_global_classifier(
+            models_dir=models_path,
+            base_universe=BASE_UNIVERSE_TICKERS,
+            extra_ticker=None,
+            start=train_start_date,
+            end=yf_end,
+            feature_cols=FEATURE_COLS,
+            window=WINDOW,
+        )
+        print("Global classifier trained.")
+        return
+
+    if not args.ticker:
+        raise SystemExit("--ticker is required unless --train_global_cls is set.")
 
     payload = build_payload(
         ticker=args.ticker,
-        start=args.start,
+        start=train_start_date,
         models_dir=args.models_dir,
         model=args.model,
     )
